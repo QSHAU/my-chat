@@ -1,13 +1,18 @@
 <script>
     import { getContext } from "svelte";
     import api from "../../Data/api";
+    import EmojiPicker from "../../Components/EmojiPicker/EmojiPicker.svelte";
+    import { io } from "socket.io-client";
 
     const {searchUserActive, selectedChat, messages, chatDetails} = getContext('store');
 
+    let socket;
+    let pickedEmoji = '';
     let searchInput;
     let searchQuery = "";
     let serachedUsers = [];
     let searchTimeout;
+    let messageContent = '';
     let userId = Number(localStorage.getItem('userId'));
 
     const searchUsers = async () => {
@@ -32,12 +37,36 @@
         const chat = res.data;
         
         if (chat.id) {
-            getChatDetails(chat.id); // Открываем чат после создания
+            joinChatRoom(chat.id); // Открываем чат после создания
         }
     }
 
-    const getChatDetails = async(chatId) => {
+    const joinChatRoom = (chatId) => {
+        console.log(chatId);
+        
         $selectedChat = chatId;
+        if (socket && $selectedChat) {
+            socket.emit("leaveChat", $selectedChat);
+            socket.disconnect();
+            socket = null;
+            console.log(`Выходим из комнаты chat_${$selectedChat}`);
+        } else {
+            socket = io("http://172.120.0.29:1337/", {
+                query: { userId }
+            });
+        }
+        socket.emit("joinChat", chatId);
+        socket.on("connect", () => {
+            console.log("Socket подключен, id:", socket.id);
+        });
+        socket.on("newMessage", (message) => {
+            $messages = [...$messages, message];
+        });
+        getMessages(chatId);
+        setChatReaded(chatId);
+    };
+
+    const getChatDetails = async(chatId) => {
         const result = await api.get(`/chats/details/${chatId}`)
         .then((result) => {
             return result.data;
@@ -45,7 +74,6 @@
             console.log(error);
         });
         $chatDetails = result;
-        getMessages(chatId);
         return result;
     }
 
@@ -56,8 +84,6 @@
         }).catch((error) => {
             console.log(error);
         });
-        console.log($messages);
-        
     }
 
     const closeSearch = () => {
@@ -69,6 +95,14 @@
     const closeChat = (e) => {
         if(e.keyCode === 27) {
             $selectedChat = null;
+            $messages = [];
+            $chatDetails = null;
+            if (socket && $selectedChat) {
+                socket.emit("leaveChat", $selectedChat);
+                socket.disconnect();
+                socket = null;
+                console.log(`Выходим из комнаты chat_${$selectedChat}`);
+            }
         }
     }
 
@@ -79,7 +113,38 @@
         
         return `${h < 10 ? '0' + h : h}:${m < 10 ? '0' + m : m}`;
     }
-    
+
+    const getAvailableChats = async () => {
+        const result = await api.get(`/chats/${userId}`);
+
+        return result.data;
+    }
+
+    const onEmojiChange = (event) => {
+        pickedEmoji = event.detail.emoji;
+        messageContent += pickedEmoji;
+    }
+
+    const sendMessage = async (e) => {
+        e.preventDefault();
+        if(messageContent.trim().length > 0) {
+            await api.post(`/messages`, {
+                chat_id: $selectedChat,
+                sender_id: userId,
+                content: messageContent,
+            });
+            messageContent = '';
+        }
+    }
+
+    const setChatReaded = async (chatId) => {
+        const result = await api.post('/messages/read', {
+            chatId,
+            userId: userId
+        })
+
+        return result.data;
+    }
 </script>
 <svelte:document on:keyup={closeChat} />
 
@@ -91,7 +156,7 @@
                     bind:this={searchInput} 
                     bind:value={searchQuery} 
                     on:input={searchUsers}
-                    on:focus={() => $searchUserActive = true} 
+                    on:focus={() => $searchUserActive = true}
                     on:focusout={closeSearch} 
                 />
             </div>
@@ -111,33 +176,49 @@
                     </div>
                 {/each}
             {:else}
-            <div class="chat__left-body__item">
-                <img class="chat__left-body__img" src="https://cdn-icons-png.flaticon.com/512/149/149071.png" alt="user">
-                <div class="chat__left-body__right">
-                    <div class="chat__left-body__top">
-                        <span class="chat__left-body__username">
-                            David Moore
-                        </span>
-                        <span class="chat__left-body__time">
-                            18:16
-                        </span>
-                    </div>
-                    <div class="chat__left-body__bottom">
-                        <span class="chat__left-body__message">
-                            Ok, see you later
-                        </span>
-                        <span class="chat__left-body__status">
-                            1
-                        </span>
-                    </div>
-                </div>
-
-            </div>
+            {#await getAvailableChats()}
+                ...
+            {:then chatsResult} 
+                {#if chatsResult}
+                    {#each chatsResult as chat}
+                        <div class="chat__left-body__item" on:click={() => joinChatRoom(chat.id)}>
+                            <img class="chat__left-body__img" src="https://cdn-icons-png.flaticon.com/512/149/149071.png" alt="user">
+                            <div class="chat__left-body__right">
+                                <div class="chat__left-body__top">
+                                    <span class="chat__left-body__username">
+                                        {chat?.users[1].username}
+                                    </span>
+                                    <span class="chat__left-body__time">
+                                        {#if chat?.lastMessage?.created_at}
+                                            {getMessageDate(chat.lastMessage?.created_at)}
+                                        {/if}
+                                    </span>
+                                </div>
+                                {#if chat?.lastMessage}
+                                    <div class="chat__left-body__bottom">
+                                        <span class="chat__left-body__message">
+                                            {#if chat?.lastMessage?.sender_id === userId}
+                                                You:
+                                            {/if}
+                                            {chat?.lastMessage?.content}
+                                        </span>
+                                        {#if chat.unread_count}
+                                            <span class="chat__left-body__status">
+                                                {chat.unread_count}
+                                            </span>
+                                        {/if}
+                                    </div>
+                                {/if}
+                            </div>
+                        </div>
+                    {/each}
+                {/if}
+            {/await}
             {/if}
         </div>
     </aside>
     <div class="chat__right">
-        {#await getChatDetails($selectedChat)}
+        {#await $selectedChat && getChatDetails($selectedChat)}
             <h4 class="loader">Loading...</h4>
         {:then chatResult}
             {#if chatResult}
@@ -165,7 +246,7 @@
                                     </span>
                                     <div class="chat__right-body__me-info">
                                         <span class="time">
-                                            {getMessageDate(new Date(message.created_at).toLocaleString())}
+                                            {getMessageDate(new Date(message.created_at))}
                                         </span>
                                         <span class="status" />
                                     </div>
@@ -177,7 +258,7 @@
                                     </span>
                                     <div class="chat__right-body__companion-info">
                                         <span class="time">
-                                            18:12
+                                            {getMessageDate(new Date(message.created_at))}
                                         </span>
                                         <span class="status" />
                                     </div>
@@ -187,9 +268,15 @@
 
                     </div>
                     <div class="chat__right-body__message">
-                        <button class="chat__right-body__message-emoji" type="button" />
-                        <input class="chat__right-body__message-window" type="text" placeholder="Message"/>
-                        <button class="chat__right-body__message-send" type="submit" />
+                        <EmojiPicker on:change={onEmojiChange} />
+                        <form class="chat__right-body__message-form" on:submit={(e) => sendMessage(e)}>
+                            <input class="chat__right-body__message-window" 
+                                type="text" 
+                                placeholder="Message"
+                                bind:value={messageContent}
+                            />
+                            <button class="chat__right-body__message-send" type="submit" />
+                        </form>
                     </div>
                 </div>
             {/if}
@@ -368,6 +455,7 @@
                 height: 56px;
                 padding: 8px 16px;
                 border-left: 1px solid #D9DCE0;
+                box-shadow: 2px 2px 6px rgba(0, 0, 0, 50%);
                 top: 0;
                 left: 0;
                 right: 0;
@@ -417,8 +505,17 @@
                 &__dialogue {
                     display: flex;
                     flex-direction: column;
+                    justify-content: flex-end;
                     gap: 16px;
+                    max-height: 100%;
+                    overflow: auto;
                     margin-bottom: 16px;
+                    padding-top: 25px;
+
+                    &::-webkit-scrollbar {
+                        width: 0;
+                        background-color: transparent;
+                    }
                 }
 
                 &__time {
@@ -536,41 +633,21 @@
                     display: flex;
                     align-items: center;
                     gap: 16px;
-                    padding: 16px;
+                    padding: 0px 16px;
                     background-color: #FFF;
                     border-radius: 12px;
                 }
 
-                &__message-emoji {
+                &__message-form {
                     display: flex;
-                    width: 24px;
-                    height: 24px;
-                    border: none;
-                    background-color: transparent;
-                    cursor: pointer;
-                    padding: 0;
-                    position: relative;
-
-                    &::before {
-                        content: '';
-                        width: 16px;
-                        height: 16px;
-                        background-image: url('../../../public/icons/emoji-icon.svg');
-                        background-size: cover;
-                        background-repeat: no-repeat;
-                        background-position: center;
-                        pointer-events: none;
-                        transform: translate(-50%, -50%);
-                        top: 50%;
-                        left: 50%;
-                        position: absolute;
-                    }
+                    align-items: center;
+                    width: 100%;
                 }
 
                 &__message-window {
                     font-size: 16px;
                     line-height: 20px;
-                    padding: 0;
+                    padding: 16px 16px 16px 0px;
                     width: 100%;
                     border: none;
                     outline: none;
