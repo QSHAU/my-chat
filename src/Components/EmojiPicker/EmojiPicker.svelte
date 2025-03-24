@@ -30,7 +30,10 @@
         background-color: transparent;
         cursor: pointer;
         padding: 0;
-        position: relative;
+        transform: translateY(-50%);
+        right: 50px;
+        top: 50%;
+        position: absolute;
 
         &::before {
             content: '';

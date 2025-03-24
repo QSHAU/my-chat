@@ -21,7 +21,6 @@ api.interceptors.response.use(
 			try {
 				
 				const response = await axios.post(`http://172.120.0.29:1337/api/auth/refresh`, { refreshToken: localStorage.getItem('refreshToken')});
-				console.log('biba');
                 if(response.data.access_token) localStorage.setItem('token', response.data.access_token);
 				return api.request(originalRequest);
 			} catch (error) {
